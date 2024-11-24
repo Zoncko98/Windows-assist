@@ -2,6 +2,7 @@ import torch
 from transformers import GPTNeoForCausalLM, GPT2Tokenizer, Trainer, TrainingArguments
 from peft import get_peft_model, LoraConfig
 from datasets import Dataset
+import os
 
 # Load GPT-Neo model and tokenizer
 model_name = "EleutherAI/gpt-neo-1.3B"
@@ -33,10 +34,14 @@ def generate_response(prompt, external_data=""):
     # Generate the response using GPT-Neo
     output = model.generate(
         input_ids,
-        max_length=300,  # Maximum length of generated tokens
+        max_length=300,  # Max tokens for response
         num_return_sequences=1,
-        temperature=0.7,  # Sampling diversity
+        temperature=0.7,  # Sampling diversity (lower for deterministic responses)
         no_repeat_ngram_size=2,  # Avoid repetitive text
+        top_p=0.9,  # Use nucleus sampling to cut off less likely words
+        top_k=50,  # Sampling top-k tokens
+        repetition_penalty=1.2,  # Penalty for repeated tokens
+        pad_token_id=model.config.pad_token_id,  # Set pad_token_id
     )
     response = tokenizer.decode(output[0], skip_special_tokens=True)
     return response.split("Assistant Response:")[-1].strip()  # Remove prompt context
@@ -110,8 +115,8 @@ def apply_lora_optimization(dataset):
     """
     # Configure LoRA
     lora_config = LoraConfig(
-        r=8,  # Low-rank update dimension
-        lora_alpha=16,
+        r=16,  # Low-rank update dimension
+        lora_alpha=32,
         target_modules=["q_proj", "v_proj"],  # Parts of the transformer to target
         lora_dropout=0.1,  # Dropout for LoRA-specific weights
     )
@@ -120,22 +125,25 @@ def apply_lora_optimization(dataset):
     lora_model = get_peft_model(model, lora_config)
     print("LoRA model configured for lightweight updates.")
 
-    # Training arguments specific to LoRA
+    # Set up training arguments for LoRA fine-tuning
     training_args = TrainingArguments(
         output_dir="./lora_optimized_model",
-        num_train_epochs=1,
-        per_device_train_batch_size=4,
-        save_steps=10,
-        save_total_limit=2,
+        num_train_epochs=3,  # Train for more epochs
+        per_device_train_batch_size=2,  # Use larger batch size (adjust based on memory)
+        save_steps=500,  # Save every 500 steps for better checkpointing
+        logging_steps=50,  # Log more frequently
+        evaluation_strategy="steps",  # Evaluate at certain intervals
         logging_dir="./logs",
+        learning_rate=5e-5,  # Consider lowering the learning rate slightly
     )
 
-    # Train and save LoRA-fine-tuned model
+    # Initialize Trainer for LoRA-fine-tuned model
     trainer = Trainer(
         model=lora_model,
         args=training_args,
         train_dataset=dataset,
     )
+
     print("Starting LoRA optimization...")
     trainer.train()
     lora_model.save_pretrained("./lora_optimized_model")
