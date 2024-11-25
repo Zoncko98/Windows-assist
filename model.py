@@ -9,6 +9,10 @@ model_name = "EleutherAI/gpt-neo-1.3B"
 model = GPTNeoForCausalLM.from_pretrained(model_name)
 tokenizer = GPT2Tokenizer.from_pretrained(model_name)
 
+# Set pad_token_id to eos_token_id, as GPT-Neo does not have a pad_token by default
+model.config.pad_token_id = model.config.eos_token_id  # This ensures padding uses eos token
+tokenizer.pad_token = tokenizer.eos_token  # Ensure tokenizer uses eos token for padding
+
 # Check device and move model accordingly
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
@@ -29,7 +33,7 @@ def generate_response(prompt, external_data=""):
         f"Live Data: {external_data}\n\n"
         f"Assistant Response:"
     )
-    input_ids = tokenizer.encode(input_text, return_tensors="pt").to(device)
+    input_ids = tokenizer.encode(input_text, return_tensors="pt", padding=True, truncation=True).to(device)
 
     # Generate the response using GPT-Neo
     output = model.generate(
@@ -41,7 +45,7 @@ def generate_response(prompt, external_data=""):
         top_p=0.9,  # Use nucleus sampling to cut off less likely words
         top_k=50,  # Sampling top-k tokens
         repetition_penalty=1.2,  # Penalty for repeated tokens
-        pad_token_id=model.config.pad_token_id,  # Set pad_token_id
+        attention_mask=input_ids.ne(tokenizer.pad_token_id).long(),  # Generate attention mask
     )
     response = tokenizer.decode(output[0], skip_special_tokens=True)
     return response.split("Assistant Response:")[-1].strip()  # Remove prompt context
@@ -59,9 +63,13 @@ def prepare_training_data(feedback_log):
     input_texts = [entry["input_text"] for entry in feedback_log]
     target_outputs = [entry["expected_output"] for entry in feedback_log]
 
-    # Tokenize inputs and labels
+    # Tokenize inputs and labels with padding and attention masks
     inputs = tokenizer(input_texts, padding=True, truncation=True, return_tensors="pt")
     outputs = tokenizer(target_outputs, padding=True, truncation=True, return_tensors="pt")
+
+    # Include attention masks and pad_token_id
+    inputs["attention_mask"] = inputs["attention_mask"].to(device)
+    outputs["attention_mask"] = outputs["attention_mask"].to(device)
 
     # Return dataset dictionary
     return Dataset.from_dict({
@@ -171,3 +179,4 @@ def load_improved_model(model_path="./fine_tuned_model"):
     except Exception as e:
         print(f"Error loading improved model: {str(e)}. Using the original model.")
         return model
+
